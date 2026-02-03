@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -12,27 +14,34 @@ func main() {
 	}))
 
 	listener, err := net.Listen("tcp", ":1337")
-
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
+	defer listener.Close()
 
-	conn, err := listener.Accept()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			logger.Error(err.Error())
+			os.Exit(1)
+		}
+		go handleConnection(conn, logger)
 
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
 	}
+}
 
+func handleConnection(conn net.Conn, logger *slog.Logger) {
 	defer conn.Close()
-
 	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				logger.Error(err.Error())
+			}
+			return
+		}
+		logger.Info(string(buf[:n]), "remote_addr", conn.RemoteAddr())
 	}
-
-	logger.Info(string(buf[:n]))
 }
