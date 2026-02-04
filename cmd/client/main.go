@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -24,13 +23,56 @@ func main() {
 
 	defer conn.Close()
 
-	sendAuthorizationRequest(conn, logger)
-	sendResultSubmissionRequest(conn, logger)
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+
+	sendAuthorizationRequest(encoder, logger)
+	listenForMessages(decoder, logger)
 }
 
-func sendAuthorizationRequest(conn net.Conn, logger *slog.Logger) {
+func listenForMessages(decoder *json.Decoder, logger *slog.Logger) {
+	for {
+		messageEnvelope := &models.MessageEnvelope{}
+		err := decoder.Decode(messageEnvelope)
+		if err != nil {
+			logger.Error("unknown message type received", "message", messageEnvelope)
+			return
+		}
+		logger.Info("received message envelope:", "id", messageEnvelope.ID)
+
+		if messageEnvelope.ID == nil {
+			handleTaskAssignmentRequest(messageEnvelope, logger)
+		} else {
+			handleResponse(messageEnvelope, logger)
+		}
+	}
+}
+
+func handleResponse(messageEnvelope *models.MessageEnvelope, logger *slog.Logger) {
+	if messageEnvelope.Result != nil && *messageEnvelope.Result {
+		logger.Info("request succeeded", "id", messageEnvelope.ID)
+	} else {
+		errMsg := "unknown error"
+		if messageEnvelope.Error != nil {
+			errMsg = *messageEnvelope.Error
+		}
+		logger.Error("request failed", "id", messageEnvelope.ID, "error", errMsg)
+	}
+}
+
+func handleTaskAssignmentRequest(messageEnvelope *models.MessageEnvelope, logger *slog.Logger) {
+	params := &models.TaskAssignmentRequestParams{}
+	err := json.Unmarshal(messageEnvelope.Params, params)
+	if err != nil {
+		logger.Error(err.Error())
+		return
+	}
+	logger.Info("received task assignment request", "job_id", params.JobID)
+}
+
+func sendAuthorizationRequest(encoder *json.Encoder, logger *slog.Logger) {
 	authRequestID := 1
-	authenticationRequest := &models.AuthenticationRequest{
+	authorizationRequest := &models.AuthenticationRequest{
 		BaseRequest: models.BaseRequest{
 			BasePayload: models.BasePayload{
 				ID: &authRequestID,
@@ -41,33 +83,14 @@ func sendAuthorizationRequest(conn net.Conn, logger *slog.Logger) {
 			Username: "test",
 		},
 	}
-
-	authRequestJson, err := json.Marshal(authenticationRequest)
+	err := encoder.Encode(authorizationRequest)
 	if err != nil {
 		logger.Error(err.Error())
-		os.Exit(1)
 	}
-	authRequestJson = append(authRequestJson, '\n')
-
-	n, err := conn.Write(authRequestJson)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
-
-	logger.Info(fmt.Sprintf("Wrote %d bytes for authorization request", n))
-
-	decoder := json.NewDecoder(conn)
-	response := &models.Response{}
-	err = decoder.Decode(response)
-	if err != nil {
-		logger.Error(err.Error())
-		return
-	}
-	logger.Info("Received authorization response:", "result", response.Result)
+	return
 }
 
-func sendResultSubmissionRequest(conn net.Conn, logger *slog.Logger) {
+func sendResultSubmissionRequest(encoder *json.Encoder, logger *slog.Logger) {
 	resultSubmissionRequestID := 2
 	resultSubmissionRequest := &models.ResultSubmissionRequest{
 		BaseRequest: models.BaseRequest{
@@ -81,18 +104,10 @@ func sendResultSubmissionRequest(conn net.Conn, logger *slog.Logger) {
 			ClientNonce: "1234567890",
 		},
 	}
-	resultSubmissionRequestJson, err := json.Marshal(resultSubmissionRequest)
+	err := encoder.Encode(resultSubmissionRequest)
 	if err != nil {
 		logger.Error(err.Error())
-		os.Exit(1)
+		return
 	}
-	resultSubmissionRequestJson = append(resultSubmissionRequestJson, '\n')
-
-	n, err := conn.Write(resultSubmissionRequestJson)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
-	logger.Info(fmt.Sprintf("Wrote %d bytes for result submission request", n))
-
+	logger.Info("sent result submission request")
 }

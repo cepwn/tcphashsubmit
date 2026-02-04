@@ -6,6 +6,14 @@ type BasePayload struct {
 	ID *int `json:"id"`
 }
 
+type MessageEnvelope struct {
+	BasePayload
+	Result *bool           `json:"result,omitempty"`
+	Error  *string         `json:"error,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
+	Method *string         `json:"method,omitempty"`
+}
+
 type Response struct {
 	BasePayload
 	Result bool    `json:"result"`
