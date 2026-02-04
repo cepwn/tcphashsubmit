@@ -37,7 +37,7 @@ func (sm *sessionManager) deleteSession(conn net.Conn) {
 	delete(sm.sessions, conn)
 }
 
-func (sm *sessionManager) broadcastTasks() []error {
+func (sm *sessionManager) broadcastTasks(jobID int, nonce string) []error {
 	sm.mu.RLock()
 	var targets []net.Conn
 	for conn, session := range sm.sessions {
@@ -58,8 +58,8 @@ func (sm *sessionManager) broadcastTasks() []error {
 				Method: "job",
 			},
 			Params: models.TaskAssignmentRequestParams{
-				JobID:       1,
-				ServerNonce: "1234567890",
+				JobID:       jobID,
+				ServerNonce: nonce,
 			},
 		}
 		err := encoder.Encode(taskAssignment)
