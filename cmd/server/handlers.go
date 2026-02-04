@@ -15,6 +15,8 @@ func (app *application) handleConnection(conn net.Conn) {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 	session := &models.Session{}
+	app.sessionManager.setSession(conn, session)
+	defer app.sessionManager.deleteSession(conn)
 	for {
 		rawRequest := &models.RawRequest{}
 		err := decoder.Decode(rawRequest)

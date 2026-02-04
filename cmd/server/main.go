@@ -7,7 +7,8 @@ import (
 )
 
 type application struct {
-	logger *slog.Logger
+	logger         *slog.Logger
+	sessionManager *sessionManager
 }
 
 func main() {
@@ -22,7 +23,9 @@ func main() {
 	}
 	defer listener.Close()
 
-	app := &application{logger: logger}
+	sessionManager := newSessionManager()
+
+	app := &application{logger: logger, sessionManager: sessionManager}
 
 	for {
 		conn, err := listener.Accept()
