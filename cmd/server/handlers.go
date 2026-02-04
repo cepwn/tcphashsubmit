@@ -14,7 +14,10 @@ func (app *application) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
-	session := &models.Session{}
+	session := &models.Session{
+		SeenClientNonces: make(map[string]struct{}),
+		JobHistory:       make(map[int]string),
+	}
 	app.sessionManager.setSession(conn, session)
 	defer app.sessionManager.deleteSession(conn)
 	for {
@@ -24,7 +27,7 @@ func (app *application) handleConnection(conn net.Conn) {
 			if !errors.Is(err, io.EOF) {
 				app.logger.Error(err.Error())
 			}
-			app.logger.Info("Connection closed by client")
+			app.logger.Info("connection closed by client")
 			return
 		}
 
@@ -34,7 +37,7 @@ func (app *application) handleConnection(conn net.Conn) {
 		case "submit":
 			app.handleResultSubmissionRequest(rawRequest, session, encoder)
 		default:
-			app.logger.Error("Unknown method:", "method", rawRequest.Method)
+			app.logger.Error("unknown method:", "method", rawRequest.Method)
 		}
 	}
 }
@@ -58,7 +61,7 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 		return
 	}
 	if params.Username == "" {
-		app.logger.Error("Received authentication request without username")
+		app.logger.Error("received authentication request without username")
 		err = encoder.Encode(&models.Response{
 			BasePayload: models.BasePayload{
 				ID: rawRequest.ID,
@@ -72,7 +75,7 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 		return
 	}
 	if session.Authenticated {
-		app.logger.Error("Received authentication request after authentication")
+		app.logger.Error("received authentication request after authentication")
 		err = encoder.Encode(&models.Response{
 			BasePayload: models.BasePayload{
 				ID: rawRequest.ID,
@@ -85,7 +88,7 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 		}
 		return
 	}
-	app.logger.Info("Received authentication request:", "username", params.Username)
+	app.logger.Info("received authentication request:", "username", params.Username)
 
 	session.Username = params.Username
 	session.Authenticated = true
@@ -104,7 +107,7 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 
 func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequest, session *models.Session, encoder *json.Encoder) {
 	if !session.Authenticated {
-		app.logger.Error("Received result submission request without authentication")
+		app.logger.Error("received result submission request without authentication")
 		err := encoder.Encode(&models.Response{
 			BasePayload: models.BasePayload{
 				ID: rawRequest.ID,
@@ -124,7 +127,7 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		app.logger.Error(err.Error())
 		return
 	}
-	app.logger.Info("Received result submission request:", "job_id", params.JobID)
+	app.logger.Info("received result submission request:", "job_id", params.JobID)
 	err = encoder.Encode(&models.Response{
 		BasePayload: models.BasePayload{
 			ID: rawRequest.ID,
