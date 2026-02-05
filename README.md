@@ -84,6 +84,26 @@ To test concurrency, run multiple client instances in separate terminals:
 ./bin/client
 ```
 
+## Limitations and Future Work
+
+1. **Message processing (RabbitMQ)**
+   - Statistics are already written off the request path via a goroutine and channel; a natural next step is to integrate RabbitMQ so submission events are durable and the server can handle restarts and scale better.
+
+2. **Graceful Shutdown**
+   - Server doesn't handle shutdown signals gracefully
+   - Connections are terminated immediately on server exit
+
+3. **Configuration**
+   - Hardcoded values (port, database connection, intervals)
+   - No configuration file or environment variable support
+
+4. **Monitoring**
+   - No metrics or health check endpoints
+   - Limited observability beyond logs
+
+5. **Job history per session**
+   - Maintain a job_id ↔ server_nonce history per session so the server can return better-detailed error information (e.g. distinguish expired vs unknown job_id, or surface the expected nonce when a result is invalid).
+
 ## Overview
 
 This system implements a challenge-response protocol where:
@@ -350,26 +370,6 @@ The server returns specific error messages for various conditions:
 | Rate limit exceeded | `"Submission too frequent"` |
 | Duplicate client_nonce | `"Duplicate submission"` |
 | Not authenticated | `"Not authenticated"` |
-
-## Limitations and Future Work
-
-1. **Message processing (RabbitMQ)**
-   - Statistics are already written off the request path via a goroutine and channel; a natural next step is to integrate RabbitMQ so submission events are durable and the server can handle restarts and scale better.
-
-2. **Graceful Shutdown**
-   - Server doesn't handle shutdown signals gracefully
-   - Connections are terminated immediately on server exit
-
-3. **Configuration**
-   - Hardcoded values (port, database connection, intervals)
-   - No configuration file or environment variable support
-
-4. **Monitoring**
-   - No metrics or health check endpoints
-   - Limited observability beyond logs
-
-5. **Job history per session**
-   - Maintain a job_id ↔ server_nonce history per session so the server can return better-detailed error information (e.g. distinguish expired vs unknown job_id, or surface the expected nonce when a result is invalid).
 
 ## License
 
