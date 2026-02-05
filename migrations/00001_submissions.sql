@@ -3,7 +3,8 @@
 CREATE TABLE submissions (
     username VARCHAR(255),
     timestamp TIMESTAMP,
-    submission_count INT
+    submission_count INT DEFAULT 1,
+    UNIQUE(username, timestamp)
 );
 -- +goose StatementEnd
 

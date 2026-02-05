@@ -168,6 +168,10 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 	}
 
 	session.SeenClientNonces[params.ClientNonce] = struct{}{}
+	app.submissionCh <- submissionEvent{
+		Username:  session.Username,
+		Timestamp: time.Now(),
+	}
 	app.logger.Info("received result submission request:", "job_id", params.JobID)
 	app.sendResponse(encoder, rawRequest.ID, true, "")
 }
