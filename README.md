@@ -368,6 +368,9 @@ The server returns specific error messages for various conditions:
    - No metrics or health check endpoints
    - Limited observability beyond logs
 
+5. **Job history per session**
+   - Maintain a job_id ↔ server_nonce history per session so the server can return better-detailed error information (e.g. distinguish expired vs unknown job_id, or surface the expected nonce when a result is invalid).
+
 ## License
 
 This project was created as part of a technical challenge.
