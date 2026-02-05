@@ -27,7 +27,7 @@ func (app *application) processSubmissions() {
 	for event := range app.submissionCh {
 		err := app.submissionStore.RecordSubmission(event.Username, event.Timestamp)
 		if err != nil {
-			app.logger.Error("failed to record submission", "error", err)
+			app.logger.Error("failed to record submission", "username", event.Username, "error", err)
 		}
 	}
 }
@@ -52,7 +52,10 @@ func (app *application) generateAndBroadcastJob() {
 	jobID, serverNonce := app.jobManager.getCurrentJobInfo()
 	errs := app.sessionManager.broadcastTasks(jobID, serverNonce)
 	for _, err := range errs {
-		app.logger.Error("failed to broadcast task", "error", err)
+		app.logger.Error("failed to broadcast task", "job_id", jobID, "error", err)
+	}
+	if len(errs) == 0 {
+		app.logger.Debug("job broadcast", "job_id", jobID)
 	}
 }
 
@@ -63,26 +66,30 @@ func main() {
 
 	pgDB, err := store.Open("host=localhost user=luxor password=luxor dbname=luxor port=5432 sslmode=disable")
 	if err != nil {
-		logger.Error(err.Error())
+		logger.Error("database connection failed", "error", err)
 		os.Exit(1)
 	}
 	defer pgDB.Close()
+	logger.Info("database connected")
 
 	err = store.MigrateFS(pgDB, migrations.FS, ".")
 	if err != nil {
-		logger.Error(err.Error())
+		logger.Error("migrations failed", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("migrations applied")
 
 	submissionStore := store.NewPostgresSubmissionStore(pgDB)
 	submissionCh := make(chan submissionEvent, 1000)
 
 	listener, err := net.Listen("tcp", ":1337")
 	if err != nil {
-		logger.Error(err.Error())
+		logger.Error("listen failed", "error", err)
 		os.Exit(1)
 	}
 	defer listener.Close()
+
+	logger.Info("server started", "addr", listener.Addr().String())
 
 	sessionManager := newSessionManager()
 	jobManager := newJobManager()
@@ -101,9 +108,10 @@ func main() {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			logger.Error(err.Error())
+			logger.Error("accept failed", "error", err)
 			os.Exit(1)
 		}
+		logger.Debug("connection accepted", "remote", conn.RemoteAddr().String())
 		go app.handleConnection(conn)
 	}
 }

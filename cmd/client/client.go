@@ -13,10 +13,10 @@ func (app *application) listenForMessages() {
 		messageEnvelope := &models.MessageEnvelope{}
 		err := app.decoder.Decode(messageEnvelope)
 		if err != nil {
-			app.logger.Error("unknown message type received", "message", messageEnvelope)
+			app.logger.Error("decode error", "error", err)
 			return
 		}
-		app.logger.Info("received message envelope:", "id", messageEnvelope.ID)
+		app.logger.Debug("message received", "id", messageEnvelope.ID)
 
 		if messageEnvelope.ID == nil {
 			app.handleTaskAssignmentRequest(messageEnvelope)
@@ -54,7 +54,7 @@ func (app *application) submitResults() {
 
 func (app *application) handleResponse(messageEnvelope *models.MessageEnvelope) {
 	if messageEnvelope.Result != nil && *messageEnvelope.Result {
-		app.logger.Info("request succeeded", "id", messageEnvelope.ID)
+		app.logger.Debug("request succeeded", "id", messageEnvelope.ID)
 	} else {
 		errMsg := "unknown error"
 		if messageEnvelope.Error != nil {
@@ -68,11 +68,11 @@ func (app *application) handleTaskAssignmentRequest(messageEnvelope *models.Mess
 	params := &models.TaskAssignmentRequestParams{}
 	err := json.Unmarshal(messageEnvelope.Params, params)
 	if err != nil {
-		app.logger.Error(err.Error())
+		app.logger.Error("invalid job params", "error", err)
 		return
 	}
 	app.clientState.setState(params.JobID, params.ServerNonce)
-	app.logger.Info("received task assignment request", "job_id", params.JobID)
+	app.logger.Debug("job received", "job_id", params.JobID)
 }
 
 func (app *application) sendAuthorizationRequest() {
@@ -94,7 +94,7 @@ func (app *application) sendAuthorizationRequest() {
 	}
 	err := app.encoder.Encode(authorizationRequest)
 	if err != nil {
-		app.logger.Error(err.Error())
+		app.logger.Error("failed to send authorize", "error", err)
 	}
 	return
 }
@@ -118,6 +118,6 @@ func (app *application) sendResultSubmissionRequest(jobID int, clientNonce strin
 	if err != nil {
 		return err
 	}
-	app.logger.Info("sent result submission request")
+	app.logger.Debug("submit sent", "job_id", jobID)
 	return nil
 }

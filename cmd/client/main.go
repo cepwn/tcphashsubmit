@@ -19,14 +19,15 @@ func main() {
 		Level: slog.LevelDebug,
 	}))
 
-	conn, err := net.Dial("tcp", ":1337")
-
+	serverAddr := "localhost:1337"
+	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
-		logger.Error(err.Error())
+		logger.Error("connection failed", "server", serverAddr, "error", err)
 		os.Exit(1)
 	}
-
 	defer conn.Close()
+
+	logger.Info("client started", "server", serverAddr)
 
 	clientState := newClientState()
 	decoder := json.NewDecoder(conn)
