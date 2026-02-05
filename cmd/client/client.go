@@ -77,6 +77,10 @@ func (app *application) handleTaskAssignmentRequest(messageEnvelope *models.Mess
 
 func (app *application) sendAuthorizationRequest() {
 	requestID := app.clientState.getNextRequestID()
+
+	nonce, _ := util.GenerateNonce()
+	username := "user-" + nonce[:8]
+
 	authorizationRequest := &models.AuthenticationRequest{
 		BaseRequest: models.BaseRequest{
 			BasePayload: models.BasePayload{
@@ -85,7 +89,7 @@ func (app *application) sendAuthorizationRequest() {
 			Method: "authorize",
 		},
 		Params: models.AuthenticationRequestParams{
-			Username: "test",
+			Username: username,
 		},
 	}
 	err := app.encoder.Encode(authorizationRequest)
