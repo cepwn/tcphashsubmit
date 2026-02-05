@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/models"
 	"github.com/cepwn/tcphashsubmit/internal/util"
@@ -113,13 +114,24 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 				ID: rawRequest.ID,
 			},
 			Result: false,
-			Error:  util.StrPtr("not authenticated"),
+			Error:  util.StrPtr("Not authenticated"),
 		})
 		if err != nil {
 			app.logger.Error(err.Error())
 		}
 		return
 	}
+
+	defer func() {
+		session.LastSubmissionTime = time.Now()
+	}()
+
+	if time.Since(session.LastSubmissionTime) < time.Second {
+		app.logger.Error("rate limit exceeded")
+		app.sendResponse(encoder, rawRequest.ID, false, "Submission too frequent")
+		return
+	}
+
 	params := &models.ResultSubmissionRequestParams{}
 
 	err := json.Unmarshal(rawRequest.Params, params)
@@ -127,14 +139,48 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		app.logger.Error(err.Error())
 		return
 	}
+	currentJobID, currentNonce := app.jobManager.getCurrentJobInfo()
+
+	if params.JobID < currentJobID {
+		app.logger.Error("received expired job id", "job_id", params.JobID)
+		app.sendResponse(encoder, rawRequest.ID, false, "Task expired")
+		return
+	}
+
+	if params.JobID != currentJobID {
+		app.logger.Error("received invalid job id", "job_id", params.JobID)
+		app.sendResponse(encoder, rawRequest.ID, false, "Task does not exist")
+		return
+	}
+
+	if _, ok := session.SeenClientNonces[params.ClientNonce]; ok {
+		app.logger.Error("received duplicate client nonce", "nonce", params.ClientNonce)
+		app.sendResponse(encoder, rawRequest.ID, false, "Duplicate submission")
+		return
+	}
+
+	hash := util.ComputeSHA256(currentNonce + params.ClientNonce)
+
+	if hash != params.Result {
+		app.logger.Error("received invalid result hash", "result", params.Result)
+		app.sendResponse(encoder, rawRequest.ID, false, "Invalid result")
+		return
+	}
+
+	session.SeenClientNonces[params.ClientNonce] = struct{}{}
 	app.logger.Info("received result submission request:", "job_id", params.JobID)
-	err = encoder.Encode(&models.Response{
-		BasePayload: models.BasePayload{
-			ID: rawRequest.ID,
-		},
-		Result: true,
-	})
-	if err != nil {
-		app.logger.Error(err.Error())
+	app.sendResponse(encoder, rawRequest.ID, true, "")
+}
+
+func (app *application) sendResponse(encoder *json.Encoder, id *int, success bool, errMsg string) {
+	response := &models.Response{
+		BasePayload: models.BasePayload{ID: id},
+		Result:      success,
+	}
+	if errMsg != "" {
+		response.Error = util.StrPtr(errMsg)
+	}
+	if err := encoder.Encode(response); err != nil {
+		app.logger.Error("failed to encode response", "error", err)
 	}
 }

@@ -27,7 +27,7 @@ func (app *application) listenForMessages() {
 }
 
 func (app *application) submitResults() {
-	ticker := time.NewTicker(2 * time.Second) // Between 1/sec and 1/min
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
