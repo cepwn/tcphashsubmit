@@ -69,25 +69,7 @@ func main() {
 	}()
 
 	var connWg sync.WaitGroup
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				if serverCtx.Err() != nil {
-					logger.Info("stopped accepting new connections")
-					return
-				}
-				logger.Error("accept failed", "error", err)
-				continue
-			}
-			logger.Debug("connection accepted", "remote", conn.RemoteAddr().String())
-			connWg.Add(1)
-			go func() {
-				defer connWg.Done()
-				app.handleConnection(serverCtx, conn)
-			}()
-		}
-	}()
+	go app.listenAndServe(listener, serverCtx, &connWg)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

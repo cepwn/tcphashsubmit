@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/store"
@@ -60,5 +62,25 @@ func (app *application) generateAndBroadcastJob() {
 	}
 	if len(errs) == 0 {
 		app.logger.Debug("job broadcast", "job_id", jobID)
+	}
+}
+
+func (app *application) listenAndServe(listener net.Listener, serverCtx context.Context, connWg *sync.WaitGroup) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if serverCtx.Err() != nil {
+				app.logger.Info("stopped accepting new connections")
+				return
+			}
+			app.logger.Error("accept failed", "error", err)
+			continue
+		}
+		app.logger.Debug("connection accepted", "remote", conn.RemoteAddr().String())
+		connWg.Add(1)
+		go func() {
+			defer connWg.Done()
+			app.handleConnection(serverCtx, conn)
+		}()
 	}
 }
