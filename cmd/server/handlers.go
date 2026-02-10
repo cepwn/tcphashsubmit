@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,8 +12,17 @@ import (
 	"github.com/cepwn/tcphashsubmit/internal/util"
 )
 
-func (app *application) handleConnection(conn net.Conn) {
+func (app *application) handleConnection(serverCtx context.Context, conn net.Conn) {
 	defer conn.Close()
+
+	connCtx, connCancel := context.WithCancel(serverCtx)
+	defer connCancel()
+
+	go func() {
+		<-connCtx.Done()
+		conn.SetDeadline(time.Now())
+	}()
+
 	remote := conn.RemoteAddr().String()
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
@@ -26,6 +36,10 @@ func (app *application) handleConnection(conn net.Conn) {
 		rawRequest := &models.RawRequest{}
 		err := decoder.Decode(rawRequest)
 		if err != nil {
+			if serverCtx.Err() != nil {
+				app.logger.Debug("connection closed due to server shutdown", "remote", remote)
+				return
+			}
 			if !errors.Is(err, io.EOF) {
 				app.logger.Error("decode error", "remote", remote, "error", err)
 			}
@@ -123,15 +137,15 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		return
 	}
 
-	defer func() {
-		session.LastSubmissionTime = time.Now()
-	}()
-
 	if time.Since(session.LastSubmissionTime) < time.Second {
 		app.logger.Error("rate limit exceeded", "username", session.Username)
 		app.sendResponse(encoder, rawRequest.ID, false, "Submission too frequent")
 		return
 	}
+
+	defer func() {
+		session.LastSubmissionTime = time.Now()
+	}()
 
 	params := &models.ResultSubmissionRequestParams{}
 

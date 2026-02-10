@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/store"
@@ -32,14 +36,20 @@ func (app *application) processSubmissions() {
 	}
 }
 
-func (app *application) runJobTicker() {
+func (app *application) runJobTicker(serverCtx context.Context) {
 	app.generateAndBroadcastJob()
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		app.generateAndBroadcastJob()
+	for {
+		select {
+		case <-serverCtx.Done():
+			app.logger.Debug("stopping job ticker")
+			return
+		case <-ticker.C:
+			app.generateAndBroadcastJob()
+		}
 	}
 }
 
@@ -102,16 +112,82 @@ func main() {
 		submissionCh:    submissionCh,
 	}
 
-	go app.runJobTicker()
-	go app.processSubmissions()
+	serverCtx, serverCtxCancel := context.WithCancel(context.Background())
+	defer serverCtxCancel()
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			logger.Error("accept failed", "error", err)
-			os.Exit(1)
+	go app.runJobTicker(serverCtx)
+	var submissionWg sync.WaitGroup
+	submissionWg.Add(1)
+	go func() {
+		defer submissionWg.Done()
+		app.processSubmissions()
+	}()
+
+	var connWg sync.WaitGroup
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if serverCtx.Err() != nil {
+					logger.Info("stopped accepting new connections")
+					return
+				}
+				logger.Error("accept failed", "error", err)
+				continue
+			}
+			logger.Debug("connection accepted", "remote", conn.RemoteAddr().String())
+			connWg.Add(1)
+			go func() {
+				defer connWg.Done()
+				app.handleConnection(serverCtx, conn)
+			}()
 		}
-		logger.Debug("connection accepted", "remote", conn.RemoteAddr().String())
-		go app.handleConnection(conn)
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	// unblock main routine by writing to stop channel
+	<-stop
+
+	logger.Info("shutting down...")
+	// start timer
+	shutdownCtx, shutdownCtxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCtxCancel()
+	// shutdown server, any checks to errors can tell if server is being shut down
+	serverCtxCancel()
+	// close listener, stop accepting new connections
+	listener.Close()
+
+	// wait until all handle connection functions exit
+	done := make(chan struct{})
+	go func() {
+		connWg.Wait()
+		close(done)
+	}()
+
+	// block until grace period timeout or all connection functions exit
+	select {
+	case <-done:
+		logger.Info("all pending connection requests processed")
+	case <-shutdownCtx.Done():
+		logger.Warn("timed out waiting for connections to close")
+		return
 	}
+
+	// close submissions channel once no one else will write to it
+	close(submissionCh)
+	drainDone := make(chan struct{})
+	go func() {
+		submissionWg.Wait()
+		close(drainDone)
+	}()
+
+	// block until grace period timeout or all connection functions exit
+	select {
+	case <-drainDone:
+		logger.Info("all pending submissions processed")
+	case <-shutdownCtx.Done():
+		logger.Warn("timed out waiting for connections to close")
+	}
+
 }
