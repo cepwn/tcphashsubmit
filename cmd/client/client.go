@@ -1,19 +1,30 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/models"
 	"github.com/cepwn/tcphashsubmit/internal/util"
 )
 
-func (app *application) listenForMessages() {
+func (app *application) listenForMessages(clientCtx context.Context, disconnected chan<- struct{}) {
 	for {
 		messageEnvelope := &models.MessageEnvelope{}
 		err := app.decoder.Decode(messageEnvelope)
 		if err != nil {
-			app.logger.Error("decode error", "error", err)
+			if clientCtx.Err() != nil {
+				app.logger.Debug("connection closed due to client shutdown")
+				return
+			}
+			if err == io.EOF {
+				app.logger.Warn("server closed connection")
+			} else {
+				app.logger.Error("decode error", "error", err)
+			}
+			close(disconnected)
 			return
 		}
 		app.logger.Debug("message received", "id", messageEnvelope.ID)
@@ -26,29 +37,34 @@ func (app *application) listenForMessages() {
 	}
 }
 
-func (app *application) submitResults() {
+func (app *application) submitResults(clientCtx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		jobID, serverNonce := app.clientState.getState()
-
-		if jobID == 0 {
-			continue
-		}
-
-		clientNonce, err := util.GenerateNonce()
-		if err != nil {
-			app.logger.Error("failed to generate nonce", "error", err)
-			continue
-		}
-		hash := util.ComputeSHA256(serverNonce + clientNonce)
-		err = app.sendResultSubmissionRequest(jobID, clientNonce, hash)
-		if err != nil {
-			app.logger.Error("error sending result submission request:", "error", err)
+	for {
+		select {
+		case <-clientCtx.Done():
+			app.logger.Debug("stopping result submission")
 			return
-		}
+		case <-ticker.C:
+			jobID, serverNonce := app.clientState.getState()
 
+			if jobID == 0 {
+				continue
+			}
+
+			clientNonce, err := util.GenerateNonce()
+			if err != nil {
+				app.logger.Error("failed to generate nonce", "error", err)
+				continue
+			}
+			hash := util.ComputeSHA256(serverNonce + clientNonce)
+			err = app.sendResultSubmissionRequest(jobID, clientNonce, hash)
+			if err != nil {
+				app.logger.Error("error sending result submission request:", "error", err)
+				return
+			}
+		}
 	}
 }
 
