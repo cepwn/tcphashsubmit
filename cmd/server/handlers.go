@@ -115,6 +115,11 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 
 	if params.JobID < currentJobID {
 		app.logger.Error("expired job_id", "job_id", params.JobID, "current_job_id", currentJobID)
+		session.DataMu.Lock()
+		if prevNonce, ok := session.JobHistory[params.JobID]; ok {
+			app.logger.Error("job_id submitted before", "server_nonce", prevNonce)
+		}
+		session.DataMu.Unlock()
 		app.sendResponse(encoder, session, rawRequest.ID, false, "Task expired")
 		return
 	}

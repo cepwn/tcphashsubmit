@@ -73,6 +73,11 @@ func (sm *sessionManager) broadcastTasks(jobID int, nonce string) []error {
 			errs = append(errs, err)
 		}
 		target.session.ConnMu.Unlock()
+		if err == nil {
+			target.session.DataMu.Lock()
+			target.session.JobHistory[jobID] = nonce
+			target.session.DataMu.Unlock()
+		}
 	}
 	return errs
 }

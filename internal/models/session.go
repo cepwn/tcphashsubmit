@@ -7,7 +7,10 @@ import (
 )
 
 type Session struct {
-	ConnMu            sync.Mutex
+	// ConnMu protects writes to the underlying connection.
+	ConnMu sync.Mutex
+	// DataMu protects JobHistory from concurrent access.
+	DataMu            sync.Mutex
 	Username          string
 	Authenticated     atomic.Bool
 	LatestJobID       int
