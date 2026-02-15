@@ -1,8 +1,12 @@
 package models
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type Session struct {
+	ConnMu             sync.Mutex
 	Username           string
 	Authenticated      bool
 	LatestJobID        int

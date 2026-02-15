@@ -37,19 +37,24 @@ func (sm *sessionManager) deleteSession(conn net.Conn) {
 	delete(sm.sessions, conn)
 }
 
+type target struct {
+	conn    net.Conn
+	session *models.Session
+}
+
 func (sm *sessionManager) broadcastTasks(jobID int, nonce string) []error {
 	sm.mu.RLock()
-	var targets []net.Conn
+	var targets []target
 	for conn, session := range sm.sessions {
 		if session.Authenticated {
-			targets = append(targets, conn)
+			targets = append(targets, target{conn, session})
 		}
 	}
 	sm.mu.RUnlock()
 
 	var errs []error
-	for _, conn := range targets {
-		encoder := json.NewEncoder(conn)
+	for _, target := range targets {
+		encoder := json.NewEncoder(target.conn)
 		taskAssignment := &models.TaskAssignmentRequest{
 			BaseRequest: models.BaseRequest{
 				BasePayload: models.BasePayload{
@@ -62,10 +67,12 @@ func (sm *sessionManager) broadcastTasks(jobID int, nonce string) []error {
 				ServerNonce: nonce,
 			},
 		}
+		target.session.ConnMu.Lock()
 		err := encoder.Encode(taskAssignment)
 		if err != nil {
 			errs = append(errs, err)
 		}
+		target.session.ConnMu.Unlock()
 	}
 	return errs
 }

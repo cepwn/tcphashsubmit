@@ -64,44 +64,17 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 	if err != nil {
 		app.logger.Error("invalid authorize params", "error", err)
 
-		err = encoder.Encode(&models.Response{
-			BasePayload: models.BasePayload{
-				ID: rawRequest.ID,
-			},
-			Result: false,
-			Error:  util.StrPtr("internal server error"),
-		})
-		if err != nil {
-			app.logger.Error("failed to encode response", "error", err)
-		}
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Internal server error")
 		return
 	}
 	if params.Username == "" {
 		app.logger.Error("authorize without username")
-		err = encoder.Encode(&models.Response{
-			BasePayload: models.BasePayload{
-				ID: rawRequest.ID,
-			},
-			Result: false,
-			Error:  util.StrPtr("bad request"),
-		})
-		if err != nil {
-			app.logger.Error("failed to encode response", "error", err)
-		}
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Bad request")
 		return
 	}
 	if session.Authenticated {
 		app.logger.Error("authorize after already authenticated")
-		err = encoder.Encode(&models.Response{
-			BasePayload: models.BasePayload{
-				ID: rawRequest.ID,
-			},
-			Result: false,
-			Error:  util.StrPtr("already authenticated"),
-		})
-		if err != nil {
-			app.logger.Error("failed to encode response", "error", err)
-		}
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Already authenticated")
 		return
 	}
 	app.logger.Debug("authorize", "username", params.Username)
@@ -109,37 +82,19 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 	session.Username = params.Username
 	session.Authenticated = true
 
-	authorizationResponse := &models.Response{
-		BasePayload: models.BasePayload{
-			ID: rawRequest.ID,
-		},
-		Result: true,
-	}
-	err = encoder.Encode(authorizationResponse)
-	if err != nil {
-		app.logger.Error("failed to encode authorize response", "error", err)
-	}
+	app.sendResponse(encoder, session, rawRequest.ID, true, "")
 }
 
 func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequest, session *models.Session, encoder *json.Encoder) {
 	if !session.Authenticated {
 		app.logger.Error("submit without authentication")
-		err := encoder.Encode(&models.Response{
-			BasePayload: models.BasePayload{
-				ID: rawRequest.ID,
-			},
-			Result: false,
-			Error:  util.StrPtr("Not authenticated"),
-		})
-		if err != nil {
-			app.logger.Error("failed to encode response", "error", err)
-		}
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Not authenticated")
 		return
 	}
 
 	if time.Since(session.LastSubmissionTime) < time.Second {
 		app.logger.Error("rate limit exceeded", "username", session.Username)
-		app.sendResponse(encoder, rawRequest.ID, false, "Submission too frequent")
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Submission too frequent")
 		return
 	}
 
@@ -158,19 +113,19 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 
 	if params.JobID < currentJobID {
 		app.logger.Error("expired job_id", "job_id", params.JobID, "current_job_id", currentJobID)
-		app.sendResponse(encoder, rawRequest.ID, false, "Task expired")
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Task expired")
 		return
 	}
 
 	if params.JobID != currentJobID {
 		app.logger.Error("invalid job_id", "job_id", params.JobID, "current_job_id", currentJobID)
-		app.sendResponse(encoder, rawRequest.ID, false, "Task does not exist")
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Task does not exist")
 		return
 	}
 
 	if _, ok := session.SeenClientNonces[params.ClientNonce]; ok {
 		app.logger.Error("duplicate client_nonce", "username", session.Username, "job_id", params.JobID)
-		app.sendResponse(encoder, rawRequest.ID, false, "Duplicate submission")
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Duplicate submission")
 		return
 	}
 
@@ -178,7 +133,7 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 
 	if hash != params.Result {
 		app.logger.Error("invalid result hash", "username", session.Username, "job_id", params.JobID)
-		app.sendResponse(encoder, rawRequest.ID, false, "Invalid result")
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Invalid result")
 		return
 	}
 
@@ -188,10 +143,10 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		Timestamp: time.Now(),
 	}
 	app.logger.Debug("submit accepted", "username", session.Username, "job_id", params.JobID)
-	app.sendResponse(encoder, rawRequest.ID, true, "")
+	app.sendResponse(encoder, session, rawRequest.ID, true, "")
 }
 
-func (app *application) sendResponse(encoder *json.Encoder, id *int, success bool, errMsg string) {
+func (app *application) sendResponse(encoder *json.Encoder, session *models.Session, id *int, success bool, errMsg string) {
 	response := &models.Response{
 		BasePayload: models.BasePayload{ID: id},
 		Result:      success,
@@ -199,6 +154,8 @@ func (app *application) sendResponse(encoder *json.Encoder, id *int, success boo
 	if errMsg != "" {
 		response.Error = util.StrPtr(errMsg)
 	}
+	session.ConnMu.Lock()
+	defer session.ConnMu.Unlock()
 	if err := encoder.Encode(response); err != nil {
 		app.logger.Error("failed to encode submit response", "error", err)
 	}
