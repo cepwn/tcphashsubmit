@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net"
 	"os"
@@ -37,7 +38,10 @@ func main() {
 	submissionStore := store.NewPostgresSubmissionStore(pgDB)
 	submissionCh := make(chan submissionEvent, 1000)
 
-	listener, err := net.Listen("tcp", ":1337")
+	addr := flag.String("addr", ":1337", "TCP network address")
+	flag.Parse()
+
+	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		logger.Error("listen failed", "error", err)
 		os.Exit(1)

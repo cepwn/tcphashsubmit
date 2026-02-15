@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"log/slog"
 	"net"
 	"os"
@@ -27,11 +28,13 @@ func main() {
 	clientCtx, clientCtxCancel := context.WithCancel(context.Background())
 	defer clientCtxCancel()
 
-	serverAddr := "localhost:1337"
-	conn, err := net.Dial("tcp", serverAddr)
+	serverAddr := flag.String("addr", ":1337", "server address to dial into")
+	flag.Parse()
+
+	conn, err := net.Dial("tcp", *serverAddr)
 
 	if err != nil {
-		logger.Error("connection failed", "server", serverAddr, "error", err)
+		logger.Error("connection failed", "server", *serverAddr, "error", err)
 		os.Exit(1)
 	}
 
@@ -42,7 +45,7 @@ func main() {
 
 	defer conn.Close()
 
-	logger.Info("client started", "server", serverAddr)
+	logger.Info("client started", "server", *serverAddr)
 
 	clientState := newClientState()
 	decoder := json.NewDecoder(conn)
