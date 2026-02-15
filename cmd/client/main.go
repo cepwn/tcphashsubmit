@@ -61,14 +61,16 @@ func main() {
 	app.sendAuthorizationRequest()
 
 	disconnected := make(chan struct{})
-	var connWg sync.WaitGroup
-	connWg.Add(1)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer connWg.Done()
+		defer wg.Done()
 		app.listenForMessages(clientCtx, disconnected)
 	}()
-
-	go app.submitResults(clientCtx)
+	go func() {
+		defer wg.Done()
+		app.submitResults(clientCtx)
+	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -90,7 +92,7 @@ func main() {
 
 	done := make(chan struct{})
 	go func() {
-		connWg.Wait()
+		wg.Wait()
 		close(done)
 	}()
 	select {
