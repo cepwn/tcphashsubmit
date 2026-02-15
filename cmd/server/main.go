@@ -11,8 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cepwn/tcphashsubmit/internal/store"
-	"github.com/cepwn/tcphashsubmit/migrations"
+	"github.com/cepwn/tcphashsubmit/internal/queue"
 )
 
 func main() {
@@ -20,23 +19,18 @@ func main() {
 		Level: slog.LevelDebug,
 	}))
 
-	pgDB, err := store.Open("host=localhost user=luxor password=luxor dbname=luxor port=5432 sslmode=disable")
+	amqpConn, err := queue.Open("amqp://guest:guest@localhost:5672/")
 	if err != nil {
-		logger.Error("database connection failed", "error", err)
+		logger.Error("amqp connection failed", "error", err)
 		os.Exit(1)
 	}
-	defer pgDB.Close()
-	logger.Info("database connected")
+	defer amqpConn.Close()
 
-	err = store.MigrateFS(pgDB, migrations.FS, ".")
+	submissionPublisher, err := queue.NewRabbitMQSubmissionQueue(amqpConn)
 	if err != nil {
-		logger.Error("migrations failed", "error", err)
+		logger.Error("submission queue init failed", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("migrations applied")
-
-	submissionStore := store.NewPostgresSubmissionStore(pgDB)
-	submissionCh := make(chan submissionEvent, 1000)
 
 	addr := flag.String("addr", ":1337", "TCP network address")
 	flag.Parse()
@@ -54,23 +48,16 @@ func main() {
 	jobManager := newJobManager()
 
 	app := &application{
-		logger:          logger,
-		sessionManager:  sessionManager,
-		jobManager:      jobManager,
-		submissionStore: submissionStore,
-		submissionCh:    submissionCh,
+		logger:              logger,
+		sessionManager:      sessionManager,
+		jobManager:          jobManager,
+		submissionPublisher: submissionPublisher,
 	}
 
 	serverCtx, serverCtxCancel := context.WithCancel(context.Background())
 	defer serverCtxCancel()
 
 	go app.runJobTicker(serverCtx)
-	var submissionWg sync.WaitGroup
-	submissionWg.Add(1)
-	go func() {
-		defer submissionWg.Done()
-		app.processSubmissions()
-	}()
 
 	var connWg sync.WaitGroup
 	go app.listenAndServe(listener, serverCtx, &connWg)
@@ -104,21 +91,4 @@ func main() {
 		logger.Warn("timed out waiting for connections to close")
 		return
 	}
-
-	// close submissions channel once no one else will write to it
-	close(submissionCh)
-	drainDone := make(chan struct{})
-	go func() {
-		submissionWg.Wait()
-		close(drainDone)
-	}()
-
-	// block until grace period timeout or all connection functions exit
-	select {
-	case <-drainDone:
-		logger.Info("all pending submissions processed")
-	case <-shutdownCtx.Done():
-		logger.Warn("timed out waiting for connections to close")
-	}
-
 }

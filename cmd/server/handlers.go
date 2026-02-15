@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/models"
+	"github.com/cepwn/tcphashsubmit/internal/queue"
 	"github.com/cepwn/tcphashsubmit/internal/util"
 )
 
@@ -145,9 +146,15 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 	}
 
 	session.SeenClientNonces[params.ClientNonce] = struct{}{}
-	app.submissionCh <- submissionEvent{
+	se := queue.SubmissionEvent{
 		Username:  session.Username,
 		Timestamp: time.Now(),
+	}
+	err = app.submissionPublisher.Publish(se)
+	if err != nil {
+		app.logger.Error("failed to publish submission event", "error", err)
+		app.sendResponse(encoder, session, rawRequest.ID, false, "Internal server error")
+		return
 	}
 	app.logger.Debug("submit accepted", "username", session.Username, "job_id", params.JobID)
 	app.sendResponse(encoder, session, rawRequest.ID, true, "")

@@ -7,29 +7,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cepwn/tcphashsubmit/internal/queue"
 	"github.com/cepwn/tcphashsubmit/internal/store"
 )
 
-type submissionEvent struct {
-	Username  string
-	Timestamp time.Time
-}
-
 type application struct {
-	logger          *slog.Logger
-	sessionManager  *sessionManager
-	jobManager      *jobManager
-	submissionStore store.SubmissionStore
-	submissionCh    chan submissionEvent
-}
-
-func (app *application) processSubmissions() {
-	for event := range app.submissionCh {
-		err := app.submissionStore.RecordSubmission(event.Username, event.Timestamp)
-		if err != nil {
-			app.logger.Error("failed to record submission", "username", event.Username, "error", err)
-		}
-	}
+	logger              *slog.Logger
+	sessionManager      *sessionManager
+	jobManager          *jobManager
+	submissionStore     store.SubmissionStore
+	submissionPublisher queue.SubmissionPublisher
 }
 
 func (app *application) runJobTicker(serverCtx context.Context) {
