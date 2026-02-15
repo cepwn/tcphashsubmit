@@ -72,7 +72,7 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 		app.sendResponse(encoder, session, rawRequest.ID, false, "Bad request")
 		return
 	}
-	if session.Authenticated {
+	if session.Authenticated.Load() {
 		app.logger.Error("authorize after already authenticated")
 		app.sendResponse(encoder, session, rawRequest.ID, false, "Already authenticated")
 		return
@@ -80,13 +80,13 @@ func (app *application) handleAuthorizationRequest(rawRequest *models.RawRequest
 	app.logger.Debug("authorize", "username", params.Username)
 
 	session.Username = params.Username
-	session.Authenticated = true
+	session.Authenticated.Store(true)
 
 	app.sendResponse(encoder, session, rawRequest.ID, true, "")
 }
 
 func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequest, session *models.Session, encoder *json.Encoder) {
-	if !session.Authenticated {
+	if !session.Authenticated.Load() {
 		app.logger.Error("submit without authentication")
 		app.sendResponse(encoder, session, rawRequest.ID, false, "Not authenticated")
 		return

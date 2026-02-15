@@ -2,13 +2,14 @@ package models
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Session struct {
 	ConnMu             sync.Mutex
 	Username           string
-	Authenticated      bool
+	Authenticated      atomic.Bool
 	LatestJobID        int
 	LatestServerNonce  string
 	SeenClientNonces   map[string]struct{}

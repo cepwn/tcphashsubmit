@@ -46,7 +46,7 @@ func (sm *sessionManager) broadcastTasks(jobID int, nonce string) []error {
 	sm.mu.RLock()
 	var targets []target
 	for conn, session := range sm.sessions {
-		if session.Authenticated {
+		if session.Authenticated.Load() {
 			targets = append(targets, target{conn, session})
 		}
 	}
