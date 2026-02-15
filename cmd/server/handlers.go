@@ -98,6 +98,8 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		return
 	}
 
+	// Update submission time even on failed validations to prevent
+	// bad actors from spamming invalid submissions to bypass rate limiting.
 	defer func() {
 		session.LastSubmissionTime = time.Now()
 	}()
