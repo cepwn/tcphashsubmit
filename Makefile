@@ -39,8 +39,8 @@ docker-reset: docker-down
 	docker volume rm tcphashsubmit_postgres_data tcphashsubmit_rabbitmq_data 2>/dev/null || true
 	docker compose up -d
 
-migrate:
-	go run ./cmd/server migrate
+migrate: build-consumer
+	go run ./cmd/consumer migrate
 
 clean:
 	rm -rf bin/
