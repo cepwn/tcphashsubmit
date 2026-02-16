@@ -2,38 +2,64 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/models"
+	"github.com/cepwn/tcphashsubmit/internal/queue"
 	"github.com/cepwn/tcphashsubmit/internal/util"
 )
 
-func newTestApp() *application {
+type mockSubmissionPublisher struct {
+	mu         sync.Mutex
+	published  []queue.SubmissionEvent
+	publishErr error
+}
+
+func (m *mockSubmissionPublisher) Publish(event queue.SubmissionEvent) error {
+	if m.publishErr != nil {
+		return m.publishErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.published = append(m.published, event)
+	return nil
+}
+
+func (m *mockSubmissionPublisher) Close() error {
+	return nil
+}
+
+func newTestApp() (*application, *mockSubmissionPublisher) {
 	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	sm := newSessionManager()
 	jm := newJobManager()
-	ch := make(chan submissionEvent, 100)
+	mock := &mockSubmissionPublisher{}
 
 	return &application{
-		logger:         logger,
-		sessionManager: sm,
-		jobManager:     jm,
-		submissionCh:   ch,
-	}
+		logger:              logger,
+		sessionManager:      sm,
+		jobManager:          jm,
+		submissionPublisher: mock,
+	}, mock
 }
 
 func newTestSession(username string) *models.Session {
-	return &models.Session{
+	s := &models.Session{
 		Username:         username,
-		Authenticated:    true,
 		SeenClientNonces: make(map[string]struct{}),
 		JobHistory:       make(map[int]string),
 	}
+	s.Authenticated.Store(true)
+	return s
 }
 
 func makeRawRequest(id int, method string, params interface{}) *models.RawRequest {
@@ -79,25 +105,25 @@ func TestHandleAuthorizationRequest(t *testing.T) {
 			username:       "",
 			authenticated:  false,
 			expectedResult: false,
-			expectedError:  "bad request",
+			expectedError:  "Bad request",
 		},
 		{
 			name:           "already authenticated",
 			username:       "alice",
 			authenticated:  true,
 			expectedResult: false,
-			expectedError:  "already authenticated",
+			expectedError:  "Already authenticated",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := newTestApp()
+			app, _ := newTestApp()
 			session := &models.Session{
-				Authenticated:    tt.authenticated,
 				SeenClientNonces: make(map[string]struct{}),
 				JobHistory:       make(map[int]string),
 			}
+			session.Authenticated.Store(tt.authenticated)
 
 			rawRequest := makeRawRequest(1, "authorize", models.AuthenticationRequestParams{
 				Username: tt.username,
@@ -118,13 +144,43 @@ func TestHandleAuthorizationRequest(t *testing.T) {
 					t.Errorf("expected error %q, got %v", tt.expectedError, resp.Error)
 				}
 			}
-			if tt.expectedResult && !session.Authenticated {
+			if tt.expectedResult && !session.Authenticated.Load() {
 				t.Error("expected session to be authenticated")
 			}
 			if tt.expectedResult && session.Username != tt.username {
 				t.Errorf("expected username %q, got %q", tt.username, session.Username)
 			}
 		})
+	}
+}
+
+func TestHandleAuthorizationRequest_BadJSON(t *testing.T) {
+	app, _ := newTestApp()
+	session := &models.Session{
+		SeenClientNonces: make(map[string]struct{}),
+		JobHistory:       make(map[int]string),
+	}
+
+	id := 1
+	rawRequest := &models.RawRequest{
+		BaseRequest: models.BaseRequest{
+			BasePayload: models.BasePayload{ID: &id},
+			Method:      "authorize",
+		},
+		Params: json.RawMessage(`{invalid`),
+	}
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+
+	app.handleAuthorizationRequest(rawRequest, session, encoder)
+
+	resp := decodeResponse(t, &buf)
+	if resp.Result {
+		t.Error("expected failure on bad JSON params")
+	}
+	if resp.Error == nil || *resp.Error != "Internal server error" {
+		t.Errorf("expected 'Internal server error', got %v", resp.Error)
 	}
 }
 
@@ -153,7 +209,7 @@ func TestHandleResultSubmissionRequest(t *testing.T) {
 		{
 			name: "not authenticated",
 			setup: func(app *application, session *models.Session) (int, string, string) {
-				session.Authenticated = false
+				session.Authenticated.Store(false)
 				return 1, "nonce", "hash"
 			},
 			expectedResult: false,
@@ -178,6 +234,7 @@ func TestHandleResultSubmissionRequest(t *testing.T) {
 				app.jobManager.currentJobID = 5
 				app.jobManager.currentServerNonce = "nonce"
 				app.jobManager.mu.Unlock()
+				session.JobHistory[3] = "oldnonce"
 				return 3, "clientnonce", "hash"
 			},
 			expectedResult: false,
@@ -232,7 +289,7 @@ func TestHandleResultSubmissionRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := newTestApp()
+			app, _ := newTestApp()
 			session := newTestSession("testuser")
 
 			jobID, clientNonce, hash := tt.setup(app, session)
@@ -263,7 +320,7 @@ func TestHandleResultSubmissionRequest(t *testing.T) {
 }
 
 func TestHandleResultSubmissionRequest_RecordsEvent(t *testing.T) {
-	app := newTestApp()
+	app, mock := newTestApp()
 	session := newTestSession("alice")
 
 	app.jobManager.mu.Lock()
@@ -285,13 +342,113 @@ func TestHandleResultSubmissionRequest_RecordsEvent(t *testing.T) {
 
 	app.handleResultSubmissionRequest(rawRequest, session, encoder)
 
-	// Check that a submission event was sent to the channel
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.published) != 1 {
+		t.Fatalf("expected 1 published event, got %d", len(mock.published))
+	}
+	if mock.published[0].Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", mock.published[0].Username)
+	}
+}
+
+func TestHandleResultSubmissionRequest_PublishFailure(t *testing.T) {
+	app, mock := newTestApp()
+	mock.publishErr = errors.New("publish failed")
+
+	session := newTestSession("testuser")
+
+	app.jobManager.mu.Lock()
+	app.jobManager.currentJobID = 1
+	app.jobManager.currentServerNonce = "servernonce"
+	app.jobManager.mu.Unlock()
+
+	clientNonce := "clientnonce"
+	hash := util.ComputeSHA256("servernonce" + clientNonce)
+
+	rawRequest := makeRawRequest(1, "submit", models.ResultSubmissionRequestParams{
+		JobID:       1,
+		ClientNonce: clientNonce,
+		Result:      hash,
+	})
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+
+	app.handleResultSubmissionRequest(rawRequest, session, encoder)
+
+	resp := decodeResponse(t, &buf)
+	if resp.Result {
+		t.Error("expected failure on publish error")
+	}
+	if resp.Error == nil || *resp.Error != "Internal server error" {
+		t.Errorf("expected 'Internal server error', got %v", resp.Error)
+	}
+}
+
+func TestHandleResultSubmissionRequest_RateLimitUpdatesTime(t *testing.T) {
+	app, _ := newTestApp()
+	session := newTestSession("testuser")
+
+	app.jobManager.mu.Lock()
+	app.jobManager.currentJobID = 1
+	app.jobManager.currentServerNonce = "servernonce"
+	app.jobManager.mu.Unlock()
+
+	before := time.Now()
+
+	rawRequest := makeRawRequest(1, "submit", models.ResultSubmissionRequestParams{
+		JobID:       1,
+		ClientNonce: "clientnonce",
+		Result:      "badhash",
+	})
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+
+	app.handleResultSubmissionRequest(rawRequest, session, encoder)
+
+	resp := decodeResponse(t, &buf)
+	if resp.Result {
+		t.Error("expected failure for bad hash")
+	}
+
+	if session.LastSubmissionTime.Before(before) {
+		t.Error("expected LastSubmissionTime to be updated even on failed validation")
+	}
+}
+
+func TestHandleConnection_UnknownMethod(t *testing.T) {
+	app, _ := newTestApp()
+
+	serverConn, clientConn := net.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.handleConnection(ctx, serverConn)
+	}()
+
+	encoder := json.NewEncoder(clientConn)
+	id := 1
+	err := encoder.Encode(&models.RawRequest{
+		BaseRequest: models.BaseRequest{
+			BasePayload: models.BasePayload{ID: &id},
+			Method:      "unknown",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to send request: %v", err)
+	}
+
+	clientConn.Close()
+
 	select {
-	case event := <-app.submissionCh:
-		if event.Username != "alice" {
-			t.Errorf("expected username 'alice', got %q", event.Username)
-		}
-	default:
-		t.Error("expected submission event on channel, got none")
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConnection did not exit after unknown method and connection close")
 	}
 }
