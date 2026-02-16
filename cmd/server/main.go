@@ -24,13 +24,13 @@ func main() {
 		logger.Error("amqp connection failed", "error", err)
 		os.Exit(1)
 	}
-	defer amqpConn.Close()
 
 	submissionPublisher, err := queue.NewRabbitMQSubmissionQueue(amqpConn)
 	if err != nil {
 		logger.Error("submission queue init failed", "error", err)
 		os.Exit(1)
 	}
+	defer submissionPublisher.Close()
 
 	addr := flag.String("addr", ":1337", "TCP network address")
 	flag.Parse()
