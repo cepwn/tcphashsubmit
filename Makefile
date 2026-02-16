@@ -8,11 +8,17 @@ build-server:
 build-client:
 	go build -o bin/client ./cmd/client
 
+build-consumer:
+	go build -o bin/consumer ./cmd/consumer
+
 run-server: build-server
 	./bin/server
 
 run-client: build-client
 	./bin/client
+
+run-consumer: build-consumer
+	./bin/consumer
 
 test:
 	go test ./...
