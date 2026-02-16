@@ -1,6 +1,6 @@
 # TCP Message Processing System
 
-A TCP-based message processing system with long-lived connections, implementing a job distribution and result submission protocol. This system handles concurrent client sessions, validates submissions, enforces rate limits, and tracks statistics in PostgreSQL.
+A TCP-based message processing system with long-lived connections, implementing a job distribution and result submission protocol. The server handles concurrent client sessions, validates submissions, enforces rate limits, and publishes events to RabbitMQ. A separate consumer process records statistics in PostgreSQL.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ A TCP-based message processing system with long-lived connections, implementing 
 
 ### 1. Start Dependencies
 
-Start PostgreSQL (and RabbitMQ, though not used) using Docker Compose:
+Start PostgreSQL and RabbitMQ using Docker Compose:
 
 ```bash
 make docker-up
@@ -22,11 +22,11 @@ docker compose up -d
 
 This will start:
 - PostgreSQL on port `5432` (user: `luxor`, password: `luxor`, database: `luxor`)
-- RabbitMQ on ports `5672` and `15672` (not used in current implementation)
+- RabbitMQ on ports `5672` (AMQP) and `15672` (management UI)
 
 ### 2. Build the Project
 
-Build both server and client:
+Build the server, client, and consumer:
 
 ```bash
 make build
@@ -35,25 +35,39 @@ make build
 Or build individually:
 
 ```bash
-make build-server  # Builds server to bin/server
-make build-client  # Builds client to bin/client
+make build-server    # Builds server to bin/server
+make build-client    # Builds client to bin/client
+make build-consumer  # Builds consumer to bin/consumer
 ```
 
-### 3. Run the Server
+### 3. Run the Consumer
+
+The consumer will:
+- Connect to PostgreSQL and run database migrations
+- Connect to RabbitMQ and subscribe to the submission queue
+- Process submission events and record statistics
+
+```bash
+make run-consumer
+# or
+./bin/consumer
+```
+
+### 4. Run the Server
 
 The server will:
-- Connect to PostgreSQL
-- Run database migrations automatically
-- Listen on port `1337` for TCP connections
+- Connect to RabbitMQ
+- Listen on port `1337` for TCP connections (configurable via `-addr` flag)
 - Start generating and broadcasting jobs
 
 ```bash
 make run-server
 # or
 ./bin/server
+./bin/server -addr :8080  # custom port
 ```
 
-### 4. Run the Client
+### 5. Run the Client
 
 In a separate terminal, run one or more clients:
 
@@ -61,6 +75,7 @@ In a separate terminal, run one or more clients:
 make run-client
 # or
 ./bin/client
+./bin/client -addr localhost:8080  # custom server address
 ```
 
 Each client will:
@@ -69,7 +84,7 @@ Each client will:
 - Receive job assignments
 - Submit results every 2 seconds (within rate limits)
 
-### 5. Testing with Multiple Clients
+### 6. Testing with Multiple Clients
 
 To test concurrency, run multiple client instances in separate terminals:
 
@@ -84,90 +99,89 @@ To test concurrency, run multiple client instances in separate terminals:
 ./bin/client
 ```
 
-## Limitations and Future Work
-
-1. **Message processing (RabbitMQ)**
-   - Statistics are already written off the request path via a goroutine and channel; a natural next step is to integrate RabbitMQ so submission events are durable and the server can handle restarts and scale better.
-
-2. **Graceful Shutdown**
-   - Server doesn't handle shutdown signals gracefully
-   - Connections are terminated immediately on server exit
-
-3. **Configuration**
-   - Hardcoded values (port, database connection, intervals)
-   - No configuration file or environment variable support
-
-4. **Monitoring**
-   - No metrics or health check endpoints
-   - Limited observability beyond logs
-
-5. **Job history per session**
-   - Maintain a job_id ↔ server_nonce history per session so the server can return better-detailed error information (e.g. distinguish expired vs unknown job_id, or surface the expected nonce when a result is invalid).
-
 ## Overview
 
 This system implements a challenge-response protocol where:
 - Clients connect via TCP and authenticate with a username
 - The server distributes jobs every 30 seconds with a server nonce
 - Clients compute SHA256 hashes and submit results
-- The server validates submissions and tracks statistics per user per minute
+- The server validates submissions and publishes events to RabbitMQ
+- A consumer process reads events from RabbitMQ and records statistics per user per minute in PostgreSQL
 
 ## Architecture
 
 ### Components
 
 1. **TCP Server** (`cmd/server/`)
-   - Listens on port `1337` for TCP connections
-   - Manages concurrent client sessions
+   - Listens on a configurable TCP address (default `:1337`)
+   - Manages concurrent client sessions with per-connection mutexes
    - Generates and broadcasts jobs every 30 seconds
    - Validates submissions and enforces rate limits
-   - Records statistics to PostgreSQL (off the request path via a goroutine and channel)
+   - Publishes accepted submissions to RabbitMQ
+   - Graceful shutdown on SIGINT/SIGTERM: stops accepting connections, waits for in-flight requests
 
-2. **TCP Client** (`cmd/client/`)
-   - Connects to the server
-   - Authenticates with a username
-   - Receives job assignments
-   - Computes SHA256 hashes and submits results
-   - Maintains persistent connection
+2. **Consumer** (`cmd/consumer/`)
+   - Subscribes to the RabbitMQ submission queue
+   - Unmarshals events and records them in PostgreSQL
+   - Always acknowledges messages (discards poison messages to avoid re-queue loops)
+   - Runs database migrations on startup
+   - Graceful shutdown with a 10-second drain timeout
 
-3. **Database Store** (`internal/store/`)
+3. **TCP Client** (`cmd/client/`)
+   - Connects to the server at a configurable address (default `:1337`)
+   - Authenticates with a randomly generated username
+   - Receives job assignments and computes SHA256 hashes
+   - Submits results every 2 seconds
+   - Graceful shutdown on SIGINT/SIGTERM or server disconnect
+
+4. **Queue** (`internal/queue/`)
+   - RabbitMQ integration with publisher confirms and manual acknowledgement
+   - `SubmissionPublisher` and `SubmissionConsumer` interfaces for testability
+
+5. **Database Store** (`internal/store/`)
    - PostgreSQL integration for statistics tracking
-   - Aggregates submissions by username and minute
+   - Aggregates submissions by username and minute via upsert
 
 ### Key Features Implemented
 
-✅ **Authentication Flow**
+**Authentication Flow**
 - Client sends authorization request with username
 - Server validates and tracks username per session
 - Supports concurrent authenticated sessions
 
-✅ **Task Distribution**
+**Task Distribution**
 - Server generates new jobs every 30 seconds
 - Each job includes a unique `job_id` and `server_nonce`
-- Jobs broadcasted to all authenticated clients
-- Job history maintained per session (bonus feature)
+- Jobs broadcast only to authenticated clients
+- Job history maintained per session for detailed error responses
 
-✅ **Result Submission**
+**Result Submission**
 - Client generates random `client_nonce` per submission
 - Computes `SHA256(server_nonce + client_nonce)`
-- Submits at rate: 1/second maximum, 1/minute minimum
 - Server validates:
-  - Job ID matches current job
-  - SHA256 calculation is correct
-  - Rate limits are enforced (1/second max)
+  - Authentication status
+  - Rate limits (1/second max)
+  - Job ID matches current job (with expired vs unknown distinction)
+  - SHA256 hash correctness
   - No duplicate client nonces
+- Rate limit timestamp updated even on failed validations to prevent spam
 
-✅ **Error Handling**
-- Invalid job_id: `"Task does not exist"`
-- Expired job_id: `"Task expired"`
-- Invalid result: `"Invalid result"`
-- Rate limit exceeded: `"Submission too frequent"`
-- Duplicate nonce: `"Duplicate submission"`
+**Message Queue Integration**
+- Server publishes submission events to RabbitMQ (durable queue, persistent messages, publisher confirms)
+- Consumer processes events independently, decoupling ingestion from storage
+- Poison messages are discarded and acknowledged to avoid infinite re-queue
 
-✅ **Statistics Collection**
-- Tracks submissions per username
-- Aggregates by minute
-- Writes to PostgreSQL off the request path (goroutine + channel); upsert per (username, minute)
+**Concurrency Safety**
+- `Session.Authenticated` uses `atomic.Bool` for lock-free reads
+- `Session.ConnMu` protects connection writes (JSON encoder)
+- `Session.DataMu` protects `JobHistory` map access
+- `sessionManager.mu` (RWMutex) protects the session map
+- `jobManager.mu` (RWMutex) protects job state
+
+**Graceful Shutdown**
+- Server: stops listener, cancels context, waits for connections with a 10-second timeout
+- Consumer: cancels context, drains in-flight messages with a 10-second timeout
+- Client: cancels context, closes connection, waits for goroutines with a 10-second timeout
 
 ## Testing
 
@@ -276,6 +290,22 @@ Example:
 
 **Important:** The order matters! `SHA256("123456") ≠ SHA256("654321")`
 
+## Error Conditions
+
+The server returns specific error messages for various conditions:
+
+| Condition | Error Message |
+|-----------|---------------|
+| Bad request (e.g. empty username) | `"Bad request"` |
+| Already authenticated | `"Already authenticated"` |
+| Not authenticated | `"Not authenticated"` |
+| Invalid job_id | `"Task does not exist"` |
+| Expired job_id | `"Task expired"` |
+| Invalid SHA256 result | `"Invalid result"` |
+| Rate limit exceeded | `"Submission too frequent"` |
+| Duplicate client_nonce | `"Duplicate submission"` |
+| Internal failure (unmarshal/publish) | `"Internal server error"` |
+
 ## Database Schema
 
 The `submissions` table tracks statistics:
@@ -296,80 +326,96 @@ Submissions are aggregated by minute (timestamp truncated to minute precision). 
 ```
 tcphashsubmit/
 ├── cmd/
-│   ├── client/          # TCP client implementation
+│   ├── client/             # TCP client
 │   │   ├── main.go
 │   │   ├── client.go
 │   │   └── client_state.go
-│   └── server/          # TCP server implementation
+│   ├── consumer/           # RabbitMQ consumer → PostgreSQL
+│   │   └── main.go
+│   └── server/             # TCP server
 │       ├── main.go
+│       ├── app.go
 │       ├── handlers.go
 │       ├── job_manager.go
 │       └── session_manager.go
 ├── internal/
-│   ├── models/          # Message models and types
+│   ├── models/             # Message models and session type
 │   │   ├── messages.go
 │   │   └── session.go
-│   ├── store/           # Database layer
+│   ├── queue/              # RabbitMQ abstraction
+│   │   ├── queue.go
+│   │   └── submission_queue.go
+│   ├── store/              # PostgreSQL layer
 │   │   ├── database.go
 │   │   └── submission_store.go
-│   └── util/            # Utility functions
+│   └── util/               # Utility functions (hashing, nonce)
 │       └── util.go
-├── migrations/          # Database migrations
+├── migrations/             # Goose database migrations
 │   ├── 00001_submissions.sql
 │   └── fs.go
-├── compose.yaml         # Docker Compose configuration
-├── Makefile            # Build and run commands
+├── compose.yaml            # Docker Compose (PostgreSQL + RabbitMQ)
+├── Makefile
 ├── go.mod
 └── go.sum
 ```
 
 ## Configuration
 
-### Server Configuration
+### Server
 
-The server uses hardcoded configuration:
-- **Port:** `1337`
-- **Database:** PostgreSQL at `localhost:5432`
-- **Database credentials:** `luxor/luxor` (database: `luxor`)
-- **Job generation interval:** 30 seconds
+| Setting | Default | Flag |
+|---------|---------|------|
+| Listen address | `:1337` | `-addr` |
+| RabbitMQ URL | `amqp://guest:guest@localhost:5672/` | — |
+| Job interval | 30 seconds | — |
 
-To modify, edit `cmd/server/main.go`.
+### Consumer
 
-### Client Configuration
+| Setting | Default |
+|---------|---------|
+| PostgreSQL DSN | `host=localhost user=luxor password=luxor dbname=luxor port=5432 sslmode=disable` |
+| RabbitMQ URL | `amqp://guest:guest@localhost:5672/` |
 
-The client uses hardcoded configuration:
-- **Server address:** `localhost:1337`
-- **Submission interval:** 2 seconds (within rate limits)
-- **Username:** Randomly generated (`user-{nonce}`)
+### Client
 
-To modify, edit `cmd/client/main.go`.
+| Setting | Default | Flag |
+|---------|---------|------|
+| Server address | `:1337` | `-addr` |
+| Submission interval | 2 seconds | — |
+| Username | Random (`user-{nonce}`) | — |
 
 ## Makefile Commands
 
-- `make build` - Build both server and client
-- `make build-server` - Build server only
-- `make build-client` - Build client only
-- `make run-server` - Build and run server
-- `make run-client` - Build and run client
-- `make test` - Run tests
-- `make test-race` - Run tests with race detection
-- `make docker-up` - Start Docker services
-- `make docker-down` - Stop Docker services
-- `make docker-reset` - Reset Docker volumes and restart
-- `make clean` - Remove build artifacts
+| Command | Description |
+|---------|-------------|
+| `make build` | Build server, client, and consumer |
+| `make build-server` | Build server only |
+| `make build-client` | Build client only |
+| `make build-consumer` | Build consumer only |
+| `make run-server` | Build and run server |
+| `make run-client` | Build and run client |
+| `make run-consumer` | Build and run consumer |
+| `make test` | Run tests |
+| `make test-race` | Run tests with race detection |
+| `make test-verbose` | Run tests with verbose output |
+| `make docker-up` | Start Docker services |
+| `make docker-down` | Stop Docker services |
+| `make docker-reset` | Reset Docker volumes and restart |
+| `make migrate` | Run database migrations |
+| `make clean` | Remove build artifacts |
 
-## Error Conditions
+## Limitations and Future Work
 
-The server returns specific error messages for various conditions:
+1. **Configuration**
+   - Connection strings and intervals are hardcoded (only listen/dial addresses are flag-configurable)
+   - No configuration file or environment variable support
 
-| Condition | Error Message |
-|-----------|---------------|
-| Invalid job_id | `"Task does not exist"` |
-| Expired job_id | `"Task expired"` |
-| Invalid SHA256 result | `"Invalid result"` |
-| Rate limit exceeded | `"Submission too frequent"` |
-| Duplicate client_nonce | `"Duplicate submission"` |
-| Not authenticated | `"Not authenticated"` |
+2. **Monitoring**
+   - No metrics or health check endpoints
+   - Limited observability beyond structured JSON logs
+
+3. **Unbounded nonce tracking**
+   - `SeenClientNonces` grows without bound for long-lived sessions; production use should add LRU eviction or periodic pruning
 
 ## License
 
