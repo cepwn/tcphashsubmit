@@ -3,13 +3,19 @@ package queue
 import (
 	"encoding/json"
 	"errors"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type SubmissionEvent struct {
 	Username  string
 	Timestamp time.Time
+}
+
+type Delivery struct {
+	Body []byte
+	Ack  func(multiple bool) error
 }
 
 type RabbitMQSubmissionQueue struct {
@@ -50,10 +56,12 @@ func NewRabbitMQSubmissionQueue(amqpConn *amqp.Connection) (*RabbitMQSubmissionQ
 
 type SubmissionPublisher interface {
 	Publish(event SubmissionEvent) error
+	Close() error
 }
 
 type SubmissionConsumer interface {
-	Subscribe() (<-chan SubmissionEvent, error)
+	Subscribe() (<-chan Delivery, error)
+	Close() error
 }
 
 func (q *RabbitMQSubmissionQueue) Publish(event SubmissionEvent) error {
@@ -76,6 +84,50 @@ func (q *RabbitMQSubmissionQueue) Publish(event SubmissionEvent) error {
 	return nil
 }
 
-func (q *RabbitMQSubmissionQueue) Subscribe() (<-chan SubmissionEvent, error) {
-	return nil, nil
+func (q *RabbitMQSubmissionQueue) Subscribe() (<-chan Delivery, error) {
+	if err := q.ch.Qos(
+		1,     // prefetchCount
+		0,     // prefetchSize
+		false, // global
+	); err != nil {
+		return nil, err
+	}
+
+	deliveries, err := q.ch.Consume(
+		q.name,
+		"",    // Consumer
+		false, // Auto-Ack
+		false, // Exclusive
+		false, // No-local
+		false, // No-Wait
+		nil,   // Args
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan Delivery)
+	go func() {
+		defer close(out)
+		for d := range deliveries {
+			out <- Delivery{
+				Body: d.Body,
+				Ack:  d.Ack,
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (q *RabbitMQSubmissionQueue) Close() error {
+	err := q.ch.Close()
+	if err != nil {
+		return err
+	}
+	err = q.conn.Close()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
