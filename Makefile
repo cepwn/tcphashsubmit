@@ -1,6 +1,6 @@
-.PHONY: build build-server build-client run-server run-client test test-race docker-up docker-down migrate clean
+.PHONY: build build-server build-client build-consumer run-server run-client run-consumer test test-race docker-up docker-down migrate clean
 
-build: build-server build-client
+build: build-server build-client build-consumer
 
 build-server:
 	go build -o bin/server ./cmd/server
