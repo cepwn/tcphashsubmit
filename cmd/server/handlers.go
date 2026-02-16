@@ -20,6 +20,7 @@ func (app *application) handleConnection(serverCtx context.Context, conn net.Con
 	defer connCancel()
 
 	go func() {
+		// clean up connection on server shutdown or goroutine exit
 		<-connCtx.Done()
 		conn.SetDeadline(time.Now())
 	}()
@@ -99,7 +100,7 @@ func (app *application) handleResultSubmissionRequest(rawRequest *models.RawRequ
 		return
 	}
 
-	// Update submission time even on failed validations to prevent
+	// update submission time even on failed validations to prevent
 	// bad actors from spamming invalid submissions to bypass rate limiting.
 	defer func() {
 		session.LastSubmissionTime = time.Now()
