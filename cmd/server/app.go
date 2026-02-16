@@ -8,14 +8,12 @@ import (
 	"time"
 
 	"github.com/cepwn/tcphashsubmit/internal/queue"
-	"github.com/cepwn/tcphashsubmit/internal/store"
 )
 
 type application struct {
 	logger              *slog.Logger
 	sessionManager      *sessionManager
 	jobManager          *jobManager
-	submissionStore     store.SubmissionStore
 	submissionPublisher queue.SubmissionPublisher
 }
 
